@@ -176,3 +176,26 @@ DeviceReq{resetDevice}                     (applies the REFRESH; the card re-ini
   decrypts too: one recorded legitimate session is as good as having the PSK.
   (An attacker needs one *successful* handshake — i.e. someone using the right
   password — but that is exactly what a normal phone connection produces.)
+
+  **Confirmed on a live card** (card advertising, one normal session, ATT payloads
+  recorded exactly as they leave the radio — no pairing, so no link-layer
+  encryption):
+
+  ```
+  card -> phone  challenge  0801 2a14 1212 0a10 be8dff7e896d080e28bac05b4b10cf4c
+                            ^field5/field2/field1 = devRandom (16 B, plaintext)
+  phone -> card  auth       0803 123a 0800 1a36 1234 0a10 7abe1ef968fdcfdc5df5fe0c048d922e
+                            1220 45a2b5453b92ca3ad3890f21a52061ed7a97785be73a6c46f63b9865afd0d7d8
+                            ^cliRandom (16 B)              ^auth = HMAC-SHA256 (32 B)
+  card -> phone  config     1a46 0801 1a42 0a0c e259ee4a1d99e17c6c878441
+                            1210 7fb8d505463124ddf1a2a299f0b9594f  1a20 …
+                            ^nonce (12 B)      ^aad (16 B)        ^plaintext
+  ```
+
+  Feeding only those captured bytes to the search above recovers the password
+  (**the EID tail**, `40…45`) in **1.32 s** (≈305 000 candidates/s, one core) and
+  yields the session key `mac[16:32]`, which then decrypts the very next frame of
+  the same capture to the device-info protobuf (`vendor = "Linksfield"`, IMEI
+  `12326129…`, SN `S3R2J026…`, `BLE-eSIM v1.0`, `scardMode = 1`).  No key
+  exchange protects any of this: the PSK is the only secret and it is checked by a
+  value that travels in clear.

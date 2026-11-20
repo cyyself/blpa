@@ -156,7 +156,7 @@ stands in front of it.  Details and transcripts in each `protocol/*.md`
 | transport authentication | PSK handshake, then an AES-CCM session | password → 3DES challenge/response | **none at all** |
 | default credential | `HMAC_SHA256(password, "SecurePbChannel")`, password = **last 6 digits of the EID** | **reverse of the last 6 characters** of the advertised name | – |
 | derivable from public data? | yes — the EID is printed / shown in the phone | yes — the name is broadcast in every advertising packet | – |
-| offline attack on a **sniffed handshake** | **1.3 s** for the 6-digit space (309 k candidates/s): `devRandom`, `cliRandom` and the HMAC answer travel in clear, so every candidate is checkable locally | **yes, ~2 min** for the full 2²⁴ space (one core; seconds on a GPU) — the captured challenge/response pair verifies any candidate | – |
+| offline attack on a **sniffed handshake** | **1.3 s** for the 6-digit space (305 k candidates/s): `devRandom`, `cliRandom` and the HMAC answer travel in clear — confirmed on a live card, the recovered key then decrypts the captured session | **yes, ~2 min** for the full 2²⁴ space (one core; seconds on a GPU) — the captured challenge/response pair verifies any candidate | – |
 | online guessing | 0.19 guesses/s (≈5 s penalty per failure) → 6 digits ≈ 60 days | 0.46 guesses/s (one guess per connection) → 10⁶ ≈ 25 days, full 2²⁴ ≈ 418 days | – |
 | BLE link-layer encryption (pairing/bonding) | none | none | none |
 | what a passive sniffer sees | handshake in clear, then AES-CCM frames | handshake ciphertexts, then **plaintext APDUs** | **everything in plaintext** |
