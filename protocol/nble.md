@@ -152,11 +152,10 @@ passing it explicitly (the CLI's `--password` / `ESIM9_PASSWORD`).
 
 * Password, key and the challenge all derive from public or low-entropy material
   (the BLE name is broadcast in every advertising packet).
-* **Brute force is an online attack only.**  The card sends a random 16-byte
-  challenge and expects `3DES(key)` of it back, so a captured handshake offers no
-  known plaintext to test candidates against — there is nothing to hand to a GPU
-  (unlike the Linklan PSK, which is an HMAC over a constant message).  Measured on
-  hardware:
+* **Two attack surfaces, with very different costs.**
+  *Online* (talking to the card) is slow: the card sends a random 16-byte challenge
+  and expects `3DES(key)` of it back, and a session allows a single attempt.
+  Measured on hardware:
 
   ```
   wrong key on a fresh connection -> E0 6A86          2.15 s per full cycle
@@ -164,12 +163,24 @@ passing it explicitly (the CLI's `--password` / `ESIM9_PASSWORD`).
   4 consecutive failures          -> card still fine, password unchanged
   ```
 
+  *Offline* (recording someone else's handshake) is cheap: the link layer is not
+  encrypted, so a sniffer captures `C1 = 3DESₖ(challenge)` and the client's
+  `C2 = 3DESₖ(challenge′)`, where `challenge′` is the same block with the 16-bit
+  counter at bytes 7–8 incremented.  For a candidate key `K` that is a complete
+  verifier: `D_K(C1)`, bump bytes 7–8, re-encrypt, compare with `C2`.  Measured on
+  the captured pair from this card: **135 000 candidates/s on one CPU core**, i.e.
+  the whole 2^24 space in ≈ **2 minutes** (seconds on a GPU); a wrong candidate
+  never matches, so the search is unambiguous.
+
   The stored password form is always **3 bytes** (six hex characters, or the CRC24
-  of an arbitrary string), i.e. a 2^24 space; a plain 6-digit PIN is 10^6.  At
-  0.46 guesses/s that is ≈ **25 days** for six digits and ≈ **418 days** for the
-  whole space — per card and adapter.  There is **no lockout**, so it is only a
-  question of patience, but it is also usually unnecessary: the default password
-  is derived from the advertised name (§2).
+  of an arbitrary string), i.e. a 2^24 space; a plain 6-digit PIN is 10^6.  Online
+  that is ≈ **25 days** for six digits and ≈ **418 days** for the whole space (per
+  card and adapter), with no lockout — but the default password is derived from the
+  advertised name anyway (§2), and the offline route makes the space irrelevant
+  once a legitimate session has been sniffed.
+* After the handshake the APDUs are sent **in plaintext** inside the framed
+  protocol — the 3DES protects only the handshake, so a sniffer reads EID,
+  profile list and every profile operation without cracking anything.
 * Defence: re-key the card (`rekey`, §7) so the password no longer follows the
   name.
 * Once authenticated the card grants full profile management (enable/disable/

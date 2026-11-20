@@ -156,8 +156,10 @@ stands in front of it.  Details and transcripts in each `protocol/*.md`
 | transport authentication | PSK handshake, then an AES-CCM session | password → 3DES challenge/response | **none at all** |
 | default credential | `HMAC_SHA256(password, "SecurePbChannel")`, password = **last 6 digits of the EID** | **reverse of the last 6 characters** of the advertised name | – |
 | derivable from public data? | yes — the EID is printed / shown in the phone | yes — the name is broadcast in every advertising packet | – |
-| offline attack on a captured handshake | **~1 s** for a 6-digit password (HMAC over a constant message, no GPU needed) | **not possible** — the challenge is random, there is nothing to test candidates against | – |
+| offline attack on a **sniffed handshake** | **~1 s** for a 6-digit password: `devRandom`, `cliRandom` and the HMAC answer travel in clear, so every candidate is checkable locally | **yes, ~2 min** for the full 2²⁴ space (one core; seconds on a GPU) — the captured challenge/response pair verifies any candidate | – |
 | online guessing | 0.19 guesses/s (≈5 s penalty per failure) → 6 digits ≈ 60 days | 0.46 guesses/s (one guess per connection) → 10⁶ ≈ 25 days, full 2²⁴ ≈ 418 days | – |
+| BLE link-layer encryption (pairing/bonding) | none | none | none |
+| what a passive sniffer sees | handshake in clear, then AES-CCM frames | handshake ciphertexts, then **plaintext APDUs** | **everything in plaintext** |
 | lockout / attempt counter | none | none | none |
 | credential protects | profile ops (enable/disable/delete/rename), notifications, the APDU bridge | same | nothing |
 | profile confidentiality | GSMA PKI — chain verified to *GSM Association RSP2 Root CI1*, profiles bound per eUICC | same | same |
@@ -166,6 +168,13 @@ What holds on all three: the transport key never yields profile key material.
 Ki/OPc stay inside the eUICC, and a profile cannot be cloned to another card —
 verified for Linklan by checking the eUICC certificate chain and the
 `AuthenticateServer` signature offline.
+
+The BLE link itself is **not** encrypted — none of the three cards pairs or bonds,
+so the vendor security is purely application level.  With a BLE sniffer that
+follows the connection (Ubertooth, an nRF52 dongle, a HackRF) a passive attacker
+records the handshake of a legitimate session, which is enough to run the offline
+attack above; on 9eSIM and BeeSIM the rest of the traffic is readable without any
+cracking at all.
 
 Worst case per card, from an attacker with BLE adjacency:
 
@@ -187,9 +196,10 @@ Hardening that actually helps:
 | **9eSIM** | `rekey` to a password that is *not* the reversed name (CLI `rekey`, or the web console's Rekey panel); the new password is no longer derivable from the advertisement |
 | **BeeSIM** | nothing in-protocol — keep it physically controlled and out of uncontrolled radio range; treat it as trusted hardware |
 
-Common advice: cards stop advertising while connected, so a card that is not in
-use should be powered down or out of range; one central at a time means an
-attacker in range can also simply block the legitimate user.
+Common advice: assume anything sent over BLE is observable — cards stop
+advertising while connected, so a card that is not in use should be powered down or
+out of range; one central at a time means an attacker in range can also simply
+block the legitimate user.
 
 ## What is (and is not) in this repository
 

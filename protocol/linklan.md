@@ -154,3 +154,8 @@ DeviceReq{resetDevice}                     (applies the REFRESH; the card re-ini
   once any valid PSK is known.
 * The PSK protects the BLE transport only; profiles stay protected by the eUICC's
   GSMA certificates (chain verified to `GSM Association - RSP2 Root CI1`).
+* The **link layer is not encrypted** (no pairing/bonding).  A sniffer therefore
+  captures `devRandom`, `cliRandom` and `auth = HMAC(mac[:16], cliRandom, 0*32)` in
+  clear — a complete offline verifier for candidate PSKs — and the AES-CCM frames
+  that follow.  Once the PSK is recovered, every captured frame decrypts, so a
+  passive recording of one legitimate session is as good as having the key.

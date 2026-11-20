@@ -106,7 +106,9 @@ means enabled.  An empty slot answers `BF2D 02 A0 00`.
 
 ## 8. Security notes
 
-BeeSIM exposes profile management with **no authentication at all**: any BLE
+The link layer is not encrypted either, so a sniffer sees every APDU in clear —
+including the EID and the profile list.  BeeSIM exposes profile management with
+**no authentication at all**: any BLE
 central in range can enable, disable, delete or rename profiles, read the EID and
 change the radio's TX power.  The firmware also offers no way to switch the BLE
 radio off (the reference implementation carries the same warning).  Treat the
