@@ -145,6 +145,52 @@ Locally it is still just:
 cd src/web && python3 -m http.server 8000    # http://localhost:8000
 ```
 
+## Security comparison
+
+All three cards expose profile management over BLE — what differs is only what
+stands in front of it.  Details and transcripts in each `protocol/*.md`
+(“Security notes”), plus the deeper report in the sibling `Linklan` checkout.
+
+| | **Linklan / Linksfield** | **9eSIM (NBLE)** | **BeeSIM** |
+|---|---|---|---|
+| transport authentication | PSK handshake, then an AES-CCM session | password → 3DES challenge/response | **none at all** |
+| default credential | `HMAC_SHA256(password, "SecurePbChannel")`, password = **last 6 digits of the EID** | **reverse of the last 6 characters** of the advertised name | – |
+| derivable from public data? | yes — the EID is printed / shown in the phone | yes — the name is broadcast in every advertising packet | – |
+| offline attack on a captured handshake | **~1 s** for a 6-digit password (HMAC over a constant message, no GPU needed) | **not possible** — the challenge is random, there is nothing to test candidates against | – |
+| online guessing | 0.19 guesses/s (≈5 s penalty per failure) → 6 digits ≈ 60 days | 0.46 guesses/s (one guess per connection) → 10⁶ ≈ 25 days, full 2²⁴ ≈ 418 days | – |
+| lockout / attempt counter | none | none | none |
+| credential protects | profile ops (enable/disable/delete/rename), notifications, the APDU bridge | same | nothing |
+| profile confidentiality | GSMA PKI — chain verified to *GSM Association RSP2 Root CI1*, profiles bound per eUICC | same | same |
+
+What holds on all three: the transport key never yields profile key material.
+Ki/OPc stay inside the eUICC, and a profile cannot be cloned to another card —
+verified for Linklan by checking the eUICC certificate chain and the
+`AuthenticateServer` signature offline.
+
+Worst case per card, from an attacker with BLE adjacency:
+
+* **BeeSIM** — full control immediately: enable/disable/delete/rename, read the
+  EID, change the radio's TX power. No credential exists, so there is nothing to
+  brute-force and nothing to re-key.
+* **9eSIM** — full control as soon as the name is seen (default password). If the
+  card was re-keyed, guessing costs days-to-months (table above); there is no
+  lockout to stop it.
+* **Linklan** — full control once the EID tail is known; if the PSK leaks (it is
+  printed in the vendor app's logcat) the password falls in about a second. The
+  card's only rate limit is a fixed 5 s delay per failure.
+
+Hardening that actually helps:
+
+| card | what to do |
+|---|---|
+| **Linklan** | rotate the PSK to a random 32-byte value and keep it out of logs; treat the EID as sensitive, since its tail is the default password |
+| **9eSIM** | `rekey` to a password that is *not* the reversed name (CLI `rekey`, or the web console's Rekey panel); the new password is no longer derivable from the advertisement |
+| **BeeSIM** | nothing in-protocol — keep it physically controlled and out of uncontrolled radio range; treat it as trusted hardware |
+
+Common advice: cards stop advertising while connected, so a card that is not in
+use should be powered down or out of range; one central at a time means an
+attacker in range can also simply block the legitimate user.
+
 ## What is (and is not) in this repository
 
 Verified behaviour, byte layouts and the quirks of each card are documented in
