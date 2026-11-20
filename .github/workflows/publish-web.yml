@@ -1,0 +1,61 @@
+name: publish web
+
+# Publishes src/web to the `web` branch (GitHub Pages) on every push to master.
+# Only the page itself is published; the toolkit, protocol docs and tests stay
+# out of that branch.  No `paths:` filter and no diff heuristics: this repository
+# keeps a single squashed commit, so the job just republishes — it takes seconds
+# and the `web` branch is always an exact copy of src/web.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-web
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Test the web console (crypto, TLV, mock card)
+        run: |
+          node src/web/test.mjs
+          node src/web/test-linklan-mock.mjs
+
+      - name: Publish src/web to the `web` branch
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+        run: |
+          set -eu
+          rm -rf /tmp/publish && mkdir -p /tmp/publish
+          cp -R src/web/. /tmp/publish/
+          cd /tmp/publish
+          # only what the page needs: no tests, vectors or dev notes
+          rm -f README.md test.mjs test-linklan-mock.mjs vectors.json
+          touch .nojekyll            # keep Pages from running Jekyll
+          git init -q -b web
+          # attribute the publish commit to whoever pushed (GitHub noreply address,
+          # so the public branch does not expose a real mail address)
+          EMAIL="${ACTOR_ID:+${ACTOR_ID}+${ACTOR}@users.noreply.github.com}"
+          EMAIL="${EMAIL:-${ACTOR}@users.noreply.github.com}"
+          git config user.name  "${ACTOR}"
+          git config user.email "${EMAIL}"
+          git add -A
+          git commit -q -m "web: publish ${SHA:0:7} by ${ACTOR}"
+          git push --force "https://x-access-token:${TOKEN}@github.com/${REPO}.git" web
+          echo "published $(find . -maxdepth 1 -type f | wc -l) files to the web branch"

@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>blpa — BLE eSIM console</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 24px;
+         background: #101418; color: #e6edf3; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #8b949e; margin-bottom: 16px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+          padding: 14px 16px; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  select, input, button { font: inherit; padding: 7px 10px; border-radius: 8px;
+         border: 1px solid #30363d; background: #0d1117; color: inherit; }
+  button { cursor: pointer; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  .chip { padding: 2px 9px; border-radius: 999px; font-size: 12px;
+          border: 1px solid #30363d; color: #8b949e; }
+  .chip.on { background: #1f6feb22; border-color: #1f6feb; color: #79c0ff; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 4px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 500; }
+  code { color: #79c0ff; }
+  #log { background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 10px;
+         height: 200px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px;
+         white-space: pre-wrap; }
+  .ok { color: #3fb950; } .err { color: #f85149; } .dim { color: #8b949e; }
+  .hint { color: #8b949e; font-size: 12px; }
+  #unsupported { display: none; border: 1px solid #d29922; background: #bb800a18;
+                 border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+  #unsupported a { color: #79c0ff; }
+  #known button { margin: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+<h1>blpa — BLE eSIM console</h1>
+<div class="sub">One page for all three families. Pick a card; the kind and the
+credentials it needs are detected from the device name.</div>
+
+<div id="unsupported">
+  <strong>This browser has no Web Bluetooth.</strong>
+  On iOS / iPadOS use <a href="https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055"
+  target="_blank" rel="noopener">Bluefy — Web BLE Browser</a> (it implements the
+  Web Bluetooth API), then open this page there.  On desktop or Android use
+  Chrome or Edge.
+</div>
+
+<div class="card">
+  <div class="row">
+    <button id="choose" class="primary">Choose card…</button>
+    <span id="detected" class="chip">no device</span>
+    <button id="connect" class="primary" disabled>Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <label class="dim"><input type="checkbox" id="verbose"> verbose BLE log</label>
+  </div>
+  <div class="row" id="known"></div>
+
+  <div class="row" id="creds" style="display:none">
+    <span class="hint" id="credsHint"></span>
+  </div>
+  <div class="row" id="pwRow" style="display:none">
+    <input id="password" placeholder="card password (EID tail)" size="30">
+    <input id="psk" placeholder="or PSK hex (optional)" size="30">
+    <button id="forget" title="remove the saved password for this card">Forget</button>
+    <span class="hint" id="saved"></span>
+  </div>
+</div>
+
+<div class="row">
+  <button id="info" disabled>Info</button>
+  <button id="eid" disabled>EID</button>
+  <button id="profiles" disabled>Profiles</button>
+  <button id="notif" disabled>Notifications</button>
+</div>
+
+<div class="card" id="rekeyCard" style="display:none">
+  <div class="row"><strong>9eSIM — change BLE name suffix &amp; password</strong></div>
+  <div class="row">
+    <input id="newSuffix" placeholder="new suffix (6 hex, e.g. 250401)" size="30">
+    <input id="newPass" placeholder="new password (6 hex, or text → CRC24)" size="34">
+    <button id="rekey">Rekey…</button>
+  </div>
+  <div class="row"><span class="hint">The card renames itself and takes a new key.
+    Afterwards disconnect and choose it again under the new name.</span></div>
+</div>
+
+<table id="table"><thead><tr><th>ICCID</th><th>state</th><th>name</th><th>provider</th><th></th></tr></thead>
+<tbody></tbody></table>
+
+<div id="log"></div>
+
+<script type="module">
+import { CARDS, detectKind, OPTIONAL_SERVICES } from './transports.js?v=12';
+import { hex } from './crypto.js?v=12';
+import * as tlv from './tlv.js?v=12';
+
+const $ = (id) => document.getElementById(id);
+const write = (msg, cls = '') => {
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  $('log').appendChild(line);
+  $('log').scrollTop = $('log').scrollHeight;
+};
+const busy = (on) => { for (const id of ['info','eid','profiles','notif','disconnect']) $(id).disabled = on ? true : !card; };
+
+let card = null;
+let pending = null;          // { device, kind }
+
+// Credentials are only needed by Linklan, and only for that one card, so they
+// are stored per device id in localStorage (never for 9eSIM/BeeSIM).
+const credKey = (device) => `blpa:creds:${device.id || device.name}`;
+const loadCreds = (device) => {
+  try { return JSON.parse(localStorage.getItem(credKey(device)) || 'null') || {}; }
+  catch { return {}; }
+};
+const saveCreds = (device, creds) => {
+  if (creds.password || creds.pskHex) localStorage.setItem(credKey(device), JSON.stringify(creds));
+  else localStorage.removeItem(credKey(device));
+};
+$('verbose').onchange = (e) => { globalThis.BLPA_DEBUG = e.target.checked;
+  write('verbose ' + (e.target.checked ? 'on' : 'off'), 'dim'); };
+
+// ---- device selection ----------------------------------------------------- //
+function selectDevice(device) {
+  const kind = detectKind(device.name || '');
+  if (!kind) {
+    write(`unsupported device "${device.name}" — expected a name starting with ` +
+          `BeeSIM, 9eSIM/esim_writer or BLE-eSIM`, 'err');
+    return;
+  }
+  pending = { device, kind };
+  $('detected').textContent = `${device.name} → ${kind}`;
+  $('detected').className = 'chip on';
+  $('connect').disabled = false;
+
+  // Linklan needs a credential (stored per card); 9eSIM has a *default* password
+  // derived from its name but may have been re-keyed, so the field is offered,
+  // prefilled, and optional.  BeeSIM has no authentication at all.
+  const needsCreds = kind === 'linklan' || kind === '9esim';
+  $('creds').style.display = needsCreds ? '' : 'none';
+  $('pwRow').style.display = needsCreds ? '' : 'none';
+  if (kind === 'linklan') {
+    const saved = loadCreds(device);
+    $('password').value = saved.password || '';
+    $('psk').value = saved.pskHex || '';
+    $('psk').style.display = '';
+    $('saved').textContent = (saved.password || saved.pskHex) ? 'stored for this card' : '';
+    $('credsHint').textContent = 'Linklan needs the card password (the last 6 digits of its EID) ' +
+      'or its PSK as hex; it is remembered for this card only.';
+  } else if (kind === '9esim') {
+    const name = (device.name || '').trim();
+    const def = [...name.slice(-6)].reverse().join('');
+    const saved = loadCreds(device);
+    $('password').value = saved.password || def;
+    $('psk').value = '';
+    $('psk').style.display = 'none';
+    $('saved').textContent = saved.password ? 'stored for this card' : '';
+    $('credsHint').textContent = '9eSIM: optional — the default password is the reversed last six ' +
+      'characters of the name (' + def + '). A password that differs from that is remembered ' +
+      'for this card.';
+  }
+  write(`selected ${device.name} (${kind})`, 'ok');
+}
+
+$('choose').onclick = async () => {
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [
+        { namePrefix: 'BeeSIM' }, { namePrefix: '9eSIM' }, { namePrefix: 'esim_writer' },
+        { namePrefix: 'BLE-eSIM' },
+      ],
+      optionalServices: OPTIONAL_SERVICES,
+    });
+    selectDevice(device);
+  } catch (e) {
+    if (e.name !== 'NotFoundError') write('chooser: ' + e.message, 'err');
+  }
+};
+
+// Chrome can list devices the page was already granted access to.
+async function showKnown() {
+  if (!navigator.bluetooth.getDevices) return;
+  try {
+    const devices = await navigator.bluetooth.getDevices();
+    const box = $('known');
+    box.innerHTML = '';
+    if (!devices.length) return;
+    box.append(Object.assign(document.createElement('span'), { className: 'hint',
+      textContent: 'known: ' }));
+    for (const device of devices) {
+      const b = document.createElement('button');
+      b.textContent = device.name || device.id;
+      b.onclick = () => selectDevice(device);
+      box.append(b);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// ---- connection ----------------------------------------------------------- //
+$('connect').onclick = async () => {
+  if (!pending) return;
+  const { device, kind } = pending;
+  const Cls = CARDS[kind];
+  try {
+    write(`connecting to ${device.name} …`, 'dim');
+    const creds = kind === 'linklan'
+      ? { password: $('password').value || undefined, pskHex: $('psk').value || undefined }
+      : kind === '9esim'
+        ? { password: $('password').value || undefined }
+        : {};
+    card = new Cls(creds);
+    await card.connect(device);
+    if (kind === 'linklan') {
+      saveCreds(device, { password: $('password').value, pskHex: $('psk').value });
+      $('saved').textContent = 'stored for this card';
+    } else if (kind === '9esim') {
+      const tail = (device.name || '').trim().slice(-6);
+      const derived = [...tail].reverse().join('');
+      const pw = $('password').value;
+      if (pw && pw !== derived) {
+        saveCreds(device, { password: pw });
+        $('saved').textContent = 'stored for this card';
+      } else {
+        saveCreds(device, {});          // default is re-derivable, nothing to keep
+        $('saved').textContent = '';
+      }
+    }
+    write(`connected (${kind})`, 'ok');
+    if (kind === '9esim') {
+      const tail = (device.name || '').trim().slice(-6);
+      $('newSuffix').value = tail;
+      $('newPass').value = [...tail].reverse().join('');
+      $('rekeyCard').style.display = '';
+    } else {
+      $('rekeyCard').style.display = 'none';
+    }
+    $('connect').disabled = true;
+    busy(false);
+    await showInfo();
+    await showProfiles();
+  } catch (e) {
+    write('connect failed: ' + e.message, 'err');
+    if (kind === '9esim' && /password/i.test(e.message)) {
+      write('this card may have a re-keyed password — edit the password field above ' +
+            '(the name-derived default only works if it was never changed)', 'dim');
+      $('password').focus();
+    }
+    card = null; busy(false); $('connect').disabled = false;
+  }
+};
+
+$('forget').onclick = () => {
+  if (!pending) return;
+  saveCreds(pending.device, {});
+  $('password').value = ''; $('psk').value = ''; $('saved').textContent = '';
+  write('saved password removed for ' + pending.device.name, 'dim');
+};
+
+$('disconnect').onclick = async () => {
+  await card?.disconnect(); card = null; busy(true);
+  $('rekeyCard').style.display = 'none';
+  $('connect').disabled = false;
+  write('disconnected', 'dim');
+};
+
+// ---- operations ----------------------------------------------------------- //
+async function showInfo() {
+  try { write(JSON.stringify(await card.info()), 'ok'); }
+  catch (e) { write('info failed: ' + e.message, 'err'); }
+}
+
+async function showProfiles() {
+  const tbody = $('table').tBodies[0];
+  tbody.innerHTML = '';
+  try {
+    const profiles = await card.profiles();
+    if (!profiles.length) write('no profiles installed', 'dim');
+    for (const p of profiles) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><code>${p.iccid}</code></td><td>${p.enabled ? 'enabled' : 'disabled'}</td>
+                      <td>${p.nickname || p.name || '-'}</td><td>${p.provider || '-'}</td><td></td>`;
+      const act = document.createElement('td');
+      const mk = (label, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label; b.style.marginRight = '6px';
+        b.onclick = async () => {
+          try { await fn(); write(`${label} ${p.iccid}: ok`, 'ok'); await showProfiles(); }
+          catch (e) { write(`${label} ${p.iccid}: ${e.message}`, 'err'); }
+        };
+        return b;
+      };
+      act.append(mk('enable', () => card.enable(p.iccid)),
+                 mk('disable', () => card.disable(p.iccid)),
+                 mk('delete', () => card.delete(p.iccid)));
+      tr.append(act);
+      tbody.append(tr);
+    }
+  } catch (e) { write('profiles failed: ' + e.message, 'err'); }
+}
+
+$('rekey').onclick = async () => {
+  const suffix = $('newSuffix').value.trim();
+  const pw = $('newPass').value;
+  if (!card || !card.setNameAndPassword) return;
+  if (!confirm(`Rekey this card to "9eSIM${suffix.toUpperCase()}" with a new password?\n\n` +
+               `The card renames itself and gets a new key — you must disconnect and ` +
+               `choose it again under the new name.`)) return;
+  try {
+    const out = await card.setNameAndPassword(suffix, pw);
+    if (pending) {
+      saveCreds(pending.device, { password: $('newPass').value });
+      $('password').value = $('newPass').value;
+      $('saved').textContent = 'stored for this card';
+    }
+    write(`rekeyed → name suffix ${out.suffix}, passwordHex ${out.passwordHex}`, 'ok');
+    write('now disconnect and choose the card again (it advertises with the new name)', 'dim');
+  } catch (e) {
+    write('rekey failed: ' + e.message, 'err');
+  }
+};
+
+$('info').onclick = showInfo;
+$('profiles').onclick = showProfiles;
+$('eid').onclick = async () => {
+  try { write('EID: ' + await card.eid(), 'ok'); }
+  catch (e) { write('eid failed: ' + e.message, 'err'); }
+};
+$('notif').onclick = async () => {
+  try { write('notifications: ' + hex(await card.storeData(tlv.cmdNotifications())), 'ok'); }
+  catch (e) { write('notifications failed: ' + e.message, 'err'); }
+};
+
+busy(true);
+showKnown();
+if (!navigator.bluetooth) {
+  $('unsupported').style.display = 'block';
+  $('choose').disabled = true;
+  write('navigator.bluetooth is missing — see the Bluefy hint above (iOS) or use Chrome/Edge.', 'err');
+} else {
+  write('Web Bluetooth needs https:// or http://localhost, and a user gesture.', 'dim');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+# local captures (may contain card identifiers)
+captures/
+# editor / OS
+.DS_Store
