@@ -154,8 +154,25 @@ DeviceReq{resetDevice}                     (applies the REFRESH; the card re-ini
   once any valid PSK is known.
 * The PSK protects the BLE transport only; profiles stay protected by the eUICC's
   GSMA certificates (chain verified to `GSM Association - RSP2 Root CI1`).
-* The **link layer is not encrypted** (no pairing/bonding).  A sniffer therefore
-  captures `devRandom`, `cliRandom` and `auth = HMAC(mac[:16], cliRandom, 0*32)` in
-  clear — a complete offline verifier for candidate PSKs — and the AES-CCM frames
-  that follow.  Once the PSK is recovered, every captured frame decrypts, so a
-  passive recording of one legitimate session is as good as having the key.
+* The **link layer is not encrypted** (no pairing/bonding), and the three values
+  needed to check a candidate PSK are all exchanged in clear *before* any key
+  exists, so a passive sniffer records them:
+  `devRandom` (card, in the plaintext challenge `SecurityProtocol{2{1:devRandom}}`),
+  and `cliRandom` + `auth` (client, in the plaintext
+  `SecurityProtocol{2{1:cliRandom, 2:auth}}`).  The check is then pure arithmetic —
+  for each candidate password `P`:
+
+  ```
+  mac  = HMAC_SHA256(HMAC_SHA256(P, "SecurePbChannel"), "SecurePbChannel" ‖ devRandom ‖ cliRandom)
+  test = HMAC_SHA256(mac[:16], cliRandom ‖ 0^32)     ==  auth ?
+  ```
+
+  Verified against a recorded handshake (captured from the vendor app's logcat,
+  same field values a sniffer sees): the proof reproduces exactly, `mac[16:32]` is
+  the session key, and a search of the 6-digit password space recovers the
+  password in **1.3 s** at ≈309 000 candidates/s on one core — the earlier `~5 s
+  per wrong guess` figure applies only to *online* attempts against the card.
+  Afterwards the session key is `mac[16:32]`, so every captured AES-CCM frame
+  decrypts too: one recorded legitimate session is as good as having the PSK.
+  (An attacker needs one *successful* handshake — i.e. someone using the right
+  password — but that is exactly what a normal phone connection produces.)
