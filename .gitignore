@@ -6,3 +6,5 @@ __pycache__/
 captures/
 # editor / OS
 .DS_Store
+# generated CA bundle (system roots + GSMA roots)
+*.combined.pem

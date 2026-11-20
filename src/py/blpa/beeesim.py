@@ -170,8 +170,8 @@ class BeeSimCard(Card):
             chunk = rest[:STORE_MAX_LC] if more else rest
             p1 = 0x11 if more else 0x91
             rsp = await self._command(bytes([cla, 0xE2, p1, block, len(chunk)]) + chunk)
-            if rsp[:1] == b"\x61":
-                return await self._get_response(rsp[1], cla=cla)
+            if rsp[:1] == b"\x61":            # data pending: fetch it, keep the SW
+                rsp = await self._get_response(rsp[1], cla=cla)
             body, sw = rsp[:-2], rsp[-2:]
             if more:
                 if sw != b"\x90\x00":

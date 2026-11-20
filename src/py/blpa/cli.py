@@ -125,6 +125,23 @@ async def run(args) -> int:
             print(f"card re-keyed; reconnect with the new name suffix {args.suffix} "
                   f"and the new password")
 
+        elif args.command == "download":
+            from .sgp22 import download_profile
+            imei = args.imei
+            if not imei:
+                info = await card.info()
+                imei = str(info.extra.get("imei") or "")
+            done = [0]
+
+            def step(index, total, label, size):
+                done[0] = index + 1
+                print(f"# [{index + 1}/{total}] {label} ({size} B)", file=sys.stderr)
+            result = await download_profile(card, args.activation_code,
+                                            confirmation_code=args.confirm,
+                                            imei=imei, enable=args.enable,
+                                            on_step=step)
+            print(json.dumps(result, indent=2))
+
         elif args.command == "apdu":
             if not hasattr(card, "transmit"):
                 raise BlpaError(f"{kind} has no raw APDU path")
@@ -159,9 +176,22 @@ def main(argv: Optional[list] = None) -> int:
             sp.add_argument("value")
         if name == "delete":
             sp.add_argument("--yes", action="store_true")
+    sp = sub.add_parser("download", help="download + install a profile from an "
+                                         "activation code (SGP.22, all cards)")
+    sp.add_argument("activation_code", help="LPA:1$<smdp>$<matchingId>")
+    sp.add_argument("--confirm", help="confirmation code, for profiles that need one")
+    sp.add_argument("--imei", help="IMEI to report to the SM-DP+ (default: the card's)")
+    sp.add_argument("--enable", action="store_true", help="enable the new profile afterwards")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="offline check of the code/segmentation, nothing is installed")
     sp = sub.add_parser("apdu", help="send a raw hex APDU (advanced)")
     sp.add_argument("hex")
     args = p.parse_args(argv)
+    if args.command == "download" and args.dry_run:
+        # offline: no card, no network
+        from .sgp22 import dry_run_download
+        print(json.dumps(dry_run_download(args.activation_code), indent=2))
+        return 0
     try:
         return asyncio.run(run(args))
     except BlpaError as exc:

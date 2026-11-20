@@ -5,6 +5,7 @@ One document per card, plus the differences between them:
 * [`linklan.md`](linklan.md) — Linksfield / Linklan `BLE-eSIM` (LPAd protobuf, PSK + AES-CCM, SCARD bridge)
 * [`nble.md`](nble.md) — 9eSIM / NBLE-SIM writers (3DES challenge, framed APDUs)
 * [`beeesim.md`](beeesim.md) — BeeSIM readers (grouped APDUs over `0xAE30`, no auth)
+* [`download.md`](download.md) — profile download (SGP.22): ES10b legs, ES9+ flow, segmentation
 
 ## The three cards side by side
 

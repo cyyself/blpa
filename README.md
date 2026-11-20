@@ -73,11 +73,33 @@ $ python -m blpa --card linklan --password "$CARD_PW" eid
 ```
 
 Commands: `info`, `eid`, `profiles [--json]`, `enable|disable|delete|nickname <iccid>`,
-`apdu <hex>`, and for 9eSIM also `rekey <6-hex-suffix> <password> --yes` (changes
-the card's BLE name and password together — verified on hardware, see
+`download <activation-code> [--confirm C] [--enable]`, `apdu <hex>`, and for 9eSIM
+also `rekey <6-hex-suffix> <password> --yes` (changes the card's BLE name and
+password together — verified on hardware, see
 [protocol/nble.md §7](protocol/nble.md)); global `--card auto|linklan|9esim|beeesim`,
 `--address`, `--name`, `--password`, `--json`.  The 9eSIM backend answers to both
 `--card 9esim` and `--card nble` (same implementation).
+
+### Profile download (SGP.22)
+
+One implementation drives every card, because a download is just ES10b STORE
+DATA plus the SM-DP+ REST API — [protocol/download.md](protocol/download.md) has
+the flow, the verified ES10b transcripts and the segmentation rules:
+
+```bash
+python -m blpa --card 9esim --password "$PW" \
+    download 'LPA:1$rsp.example.com$04386-AGYFT-A74Y8-3F815'
+python -m blpa --card beeesim download 'LPA:1$…$…' --confirm 1234 --enable
+python -m blpa --card linklan --password "$CARD_PW" download --dry-run 'LPA:1$…$…'
+```
+
+`--dry-run` needs no card and no network: it validates the activation code and
+the bound-profile-package segmentation.  The CLI prints the parsed
+`ProfileInstallationResult` (status, ICCID), drains the card's pending
+notifications to the SM-DP+ (an undelivered notification leaves the order
+"installed" on the server), and `--enable` switches to the new profile at the
+end.  Dependencies: `requests` + `certifi`; the GSMA RSP root bundle ships in
+`src/py/blpa/certs/` because SM-DP+ certificates are not issued by public CAs.
 
 ## Credentials
 
