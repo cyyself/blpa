@@ -76,15 +76,28 @@ export class LinklanCard extends BaseCard {
   async connect(device) {
     this.device = device ?? this.device;
     if (!this.psk) await this.setCredentials(this.opts);
-    this.server = await this.device.gatt.connect();
-    const svc = await this.server.getPrimaryService(NUS);
-    this.write = await svc.getCharacteristic(NUS_WRITE);
-    this.notify = await svc.getCharacteristic(NUS_NOTIFY);
-    await this.notify.startNotifications();
-    this.notify.addEventListener('characteristicvaluechanged', (e) => this._onNotify(e.target.value));
-    await this._request(0, pInt(1, 1, true));
-    this.channel = 4;
-    await this._openChannel();
+    try {
+      this.server = await this.device.gatt.connect();
+      const svc = await this.server.getPrimaryService(NUS);
+      this.write = await svc.getCharacteristic(NUS_WRITE);
+      this.notify = await svc.getCharacteristic(NUS_NOTIFY);
+      await this.notify.startNotifications();
+      this.notify.addEventListener('characteristicvaluechanged', (e) => this._onNotify(e.target.value));
+      await this._request(0, pInt(1, 1, true));
+      this.channel = 4;
+      await this._openChannel();
+    } catch (e) {
+      // A half-open link keeps the card connected, and a connected card stops
+      // advertising — it would then be missing from every later chooser.
+      await this.disconnect();
+      throw e;
+    }
+  }
+  async disconnect() {
+    try { if (this.timer) { clearTimeout(this.timer); this.timer = null; } this.resolve = null; } catch {}
+    try { await this.notify?.stopNotifications(); } catch {}
+    try { this.device?.gatt?.connected && this.device.gatt.disconnect(); } catch {}
+    this.server = this.write = this.notify = null;
   }
   _onNotify(dv) {
     const data = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
@@ -94,25 +107,40 @@ export class LinklanCard extends BaseCard {
       const rsp = this.buf.slice(2, 2 + this.expect);
       this.buf = new Uint8Array();
       const done = this.resolve; this.resolve = null;
+      if (this.timer) { clearTimeout(this.timer); this.timer = null; }
       if (done) done(rsp);
     }
   }
-  async _send(payload) {
+  async _send(payload, timeoutMs = 12000) {
     const frame = concat(new Uint8Array([payload.length >> 8, payload.length & 0xff]), payload);
-    const p = new Promise((res) => { this.resolve = res; });
+    const p = new Promise((res, rej) => {
+      this.resolve = res;
+      this.timer = setTimeout(() => {
+        this.resolve = null; this.timer = null;
+        rej(new Error(`linklan: the card did not answer within ${timeoutMs / 1000}s ` +
+                       '(weak signal or a link still held by another app?)'));
+      }, timeoutMs);
+    });
+    p.catch(() => {});   // the writes loop below may still be running
     // Web Bluetooth exposes no MTU, so start optimistic and shrink on failure:
     // Chrome throws on a write larger than ATT MTU-3.
     let chunk = this.chunk ?? 244;
-    for (let i = 0; i < frame.length;) {
-      const size = Math.min(chunk, frame.length - i);
-      try {
-        await this._writeChunk(frame.slice(i, i + size));
-        i += size;
-      } catch (e) {
-        if (chunk <= 20) throw e;
-        chunk = Math.max(20, Math.floor(chunk / 2));
-        this.chunk = chunk;
+    try {
+      for (let i = 0; i < frame.length;) {
+        const size = Math.min(chunk, frame.length - i);
+        try {
+          await this._writeChunk(frame.slice(i, i + size));
+          i += size;
+        } catch (e) {
+          if (chunk <= 20) throw e;
+          chunk = Math.max(20, Math.floor(chunk / 2));
+          this.chunk = chunk;
+        }
       }
+    } catch (e) {
+      if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+      this.resolve = null;
+      throw e;
     }
     return await p;
   }
@@ -217,8 +245,23 @@ export class LinklanCard extends BaseCard {
     throw new Error('linklan: authentication failed (wrong PSK/password)');
   }
   async _openChannel() {
-    const body = concat(pInt(1, 1, true), pBytes(2, concat(pStr(1, ISDR), pInt(2, 0))));
-    await this._request(2, body);
+    const open = concat(pInt(1, 1, true), pBytes(2, concat(pStr(1, ISDR), pInt(2, 0))));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let result = 0;
+      try {
+        result = pDecode(await this._request(2, open))[2] ?? 0;
+      } catch (e) {
+        if (attempt) throw e;          // second failure: report it
+        result = -1;                   // e.g. SW 6881 — channel already in use
+      }
+      if (!result) return;
+      // a channel leaked by an earlier session blocks new opens: close 1…5
+      if (globalThis.BLPA_DEBUG) console.log('CLIENT openChannel result', result, '- releasing stale channels');
+      for (let ch = 1; ch <= 5; ch++) {
+        try { await this._request(2, concat(pInt(1, 2, true), pInt(3, ch))); } catch { /* not open */ }
+      }
+    }
+    throw new Error('linklan: no free logical channel (card needs a power-cycle)');
   }
   async transmit(apdu, maxApdu = 255) {
     const data = apdu.slice(5, 5 + apdu[4]);

@@ -95,9 +95,9 @@ credentials it needs are detected from the device name.</div>
 <div id="log"></div>
 
 <script type="module">
-import { CARDS, detectKind, OPTIONAL_SERVICES } from './transports.js?v=12';
-import { hex } from './crypto.js?v=12';
-import * as tlv from './tlv.js?v=12';
+import { CARDS, detectKind, OPTIONAL_SERVICES } from './transports.js?v=13';
+import { hex } from './crypto.js?v=13';
+import * as tlv from './tlv.js?v=13';
 
 const $ = (id) => document.getElementById(id);
 const write = (msg, cls = '') => {
@@ -246,14 +246,28 @@ $('connect').onclick = async () => {
     await showProfiles();
   } catch (e) {
     write('connect failed: ' + e.message, 'err');
+    if (kind === 'linklan' && /authentication failed/i.test(e.message)) {
+      write('that means the PSK/password did not match — if this card was re-keyed, ' +
+            'click Forget and enter the current password (the EID\'s last six digits)', 'dim');
+      $('password').focus();
+    }
     if (kind === '9esim' && /password/i.test(e.message)) {
       write('this card may have a re-keyed password — edit the password field above ' +
             '(the name-derived default only works if it was never changed)', 'dim');
       $('password').focus();
     }
+    try { card?.disconnect(); } catch { /* already gone */ }
+    try { if (device.gatt?.connected) device.gatt.disconnect(); } catch { /* ignore */ }
     card = null; busy(false); $('connect').disabled = false;
   }
 };
+
+// Never leave a card connected when the tab goes away: a connected card stops
+// advertising and would be missing from the next session's chooser.
+addEventListener('pagehide', () => {
+  try { card?.disconnect(); } catch { /* ignore */ }
+  try { if (pending?.device?.gatt?.connected) pending.device.gatt.disconnect(); } catch { /* ignore */ }
+});
 
 $('forget').onclick = () => {
   if (!pending) return;
